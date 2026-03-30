@@ -629,7 +629,8 @@ def answer_route_reach_next(
         next_row = future_rows[0]
         answer = (
             f"{route_name_zh} 有到 {destination}。"
-            f"最近一班是 {next_row['time']}，"
+            f"最近一班於 {next_row['start_time']} 發車，"
+            f"{next_row['time']} 會到 {destination}，"
             f"方向是 {next_row['direction']}。"
         )
         return answer, [next_row]
@@ -643,7 +644,8 @@ def answer_route_reach_next(
     next_day_first = all_rows[0]
     answer = (
         f"{route_name_zh} 今天到 {destination} 的末班車已過。"
-        f"明天最早一班是 {next_day_first['time']}，"
+        f"明天最早一班於 {next_day_first['start_time']} 發車，"
+        f"{next_day_first['time']} 會到 {destination}，"
         f"方向是 {next_day_first['direction']}。"
     )
     return answer, [next_day_first]

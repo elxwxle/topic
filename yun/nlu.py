@@ -174,7 +174,7 @@ def parse_explicit_before(question: str) -> Optional[str]:
         r"(?:凌晨|早上|上午|中午|下午|晚上|傍晚)?"
         r"[零〇一二兩三四五六七八九十\d]{1,3}點"
         r"(?:半|[零〇一二兩三四五六七八九十\d]{1,2}分)?)"
-        r"\s*(前|之前|以前)"
+        r"\s*前"
     )
     m = re.search(pattern, question)
     if m:
@@ -357,10 +357,13 @@ def detect_intent(
     if "回" in q and any(k in q for k in ["怎麼搭", "怎麼回", "如何", "怎麼"]):
         score["return_plan"] += 3.5
 
-    if any(k in q for k in ["多久", "多長時間", "要幾分鐘"]):
+    if any(k in q for k in ["多久", "多長時間", "要幾分鐘", "花多久", "要多久"]):
         score["travel_time"] += 3.0
 
-    if "前" in q and any(k in q for k in ["能不能到", "可不可以到", "趕得到", "到得了","來得及", "能到嗎", "到得及", "前到", "前抵達", "前到達"]):
+    if "前" in q and any(k in q for k in [
+        "能不能到", "可不可以到", "趕得到", "到得了",
+        "來得及", "能到嗎", "到得及", "前到", "前抵達", "前到達"
+    ]):
         score["arrival_feasible"] += 4.0
 
     if route_candidates and any(k in q for k in ["有沒有到", "會到", "有到", "能不能到", "會不會到", "有沒有經過", "會經過"]):
@@ -425,24 +428,26 @@ def parse_with_rules(
 
     if "現在" in q and after is None:
         after = now_dt.strftime("%H:%M")
-    
-    result_mode = "all"
 
+    # 新規劃問題時，如果本句沒有明確指定路線，就不要保留 route
+    explicit_route_in_text = any(r in q for r in routes.keys())
+    if any(k in q for k in ["如何到", "如何去", "怎麼去", "怎麼搭", "怎麼走"]):
+        if not explicit_route_in_text:
+            route_candidates = []
+
+    intent, confidence, score_detail = detect_intent(q, routes, alias_map)
+
+    result_mode = "all"
     if any(k in q for k in ["下一班", "最近一班", "最近來的車", "最近可搭", "下一台"]):
         result_mode = "next"
-
     elif any(k in q for k in ["有到嗎", "會到嗎", "有沒有到", "會不會到"]):
         result_mode = "next"
-
     elif any(k in q for k in ["有沒有車", "還有沒有車"]) and (
         after is not None or before is not None or period_range is not None
     ):
         result_mode = "next"
-        
-    intent, confidence, score_detail = detect_intent(q, routes, alias_map)
 
     schema = NLUSchema(
-        result_mode=result_mode,
         intent=intent,
         route=route_candidates[0] if route_candidates else None,
         stop=stop_candidates[0] if stop_candidates else None,
@@ -453,6 +458,7 @@ def parse_with_rules(
         arrive_by=before if intent == "arrival_feasible" else None,
         period_label=period_label,
         period_range=period_range,
+        result_mode=result_mode,
         confidence=confidence,
         source="rules",
         debug={
@@ -492,8 +498,8 @@ def _default_unknown_schema() -> dict[str, Any]:
         "arrive_by": None,
         "period_label": None,
         "period_range": None,
-        "confidence": 0.0,
         "result_mode": "all",
+        "confidence": 0.0,
     }
 
 
@@ -552,6 +558,7 @@ def llm_extract_schema(question: str) -> dict[str, Any]:
 - arrive_by
 - period_label
 - period_range
+- result_mode
 - confidence
 
 規則:
@@ -559,7 +566,7 @@ def llm_extract_schema(question: str) -> dict[str, Any]:
 2. confidence 請填 0 到 1 之間的小數。
 3. period_range 若有值，格式要是 ["下午","12:00","17:59"] 這種陣列。
 4. 只輸出一個 JSON 物件，不要加說明。
-5. route 例如 "201"、"Y02"。
+5. route 例如 "201"、"Y01"。
 6. 若是「九點前能不能到雲科大」這類，intent 應為 arrival_feasible，arrive_by 應為 "09:00"。
 7. 若是「如何到雲科」這類，intent 應為 route_plan。
 8. result_mode 可用值為 "all" 或 "next"。
@@ -598,6 +605,9 @@ def llm_extract_schema(question: str) -> dict[str, Any]:
         except Exception:
             schema["confidence"] = 0.0
 
+        if schema.get("result_mode") not in {"all", "next"}:
+            schema["result_mode"] = "all"
+
         return schema
 
     except Exception:
@@ -614,12 +624,23 @@ def safe_merge_schema(rule_schema: NLUSchema, llm_data: dict[str, Any]) -> NLUSc
         return merged
 
     for key in [
-        "intent", "route", "stop", "origin", "destination","result_mode",
-        "after", "before", "arrive_by", "period_label", "period_range"
+        "intent", "route", "stop", "origin", "destination",
+        "after", "before", "arrive_by", "period_label", "period_range",
+        "result_mode"
     ]:
         val = llm_data.get(key)
         if val in [None, "", []]:
             continue
+
+        # 新規劃問題時，如果原句沒有明確路線，不允許 LLM 硬補 route
+        if key == "route":
+            raw_q = rule_schema.debug.get("normalized_question", "")
+            explicit_route_in_text = any(r in raw_q for r in [
+                "Y01", "Y02", "Y03", "101", "102", "103",
+                "201", "202", "203", "205", "301", "701"
+            ])
+            if any(k in raw_q for k in ["如何到", "如何去", "怎麼去", "怎麼搭", "怎麼走"]) and not explicit_route_in_text:
+                continue
 
         current = getattr(merged, key)
         if current in [None, "", []] or merged.intent == "unknown":

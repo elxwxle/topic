@@ -19,6 +19,7 @@ from bus_core import (
     answer_travel_time,
     answer_arrival_feasible,
     convert_output_text,
+    route_number_to_chinese,
 )
 from nlu import (
     parse_with_optional_llm,
@@ -26,6 +27,12 @@ from nlu import (
 )
 from pagination import make_cursor, paginate_items
 from state import conversation_state
+
+try:
+    from rag_core import rag_answer
+except Exception:
+    def rag_answer(query: str) -> str:
+        return "目前找不到可補充的說明資料。"
 
 
 # ---------------------------------
@@ -124,60 +131,74 @@ def build_single_item_answer(intent: str, page_items: list[dict], fallback_answe
         return fallback_answer or "目前沒有資料。"
 
     item = page_items[0]
+    route_zh = route_number_to_chinese(item["route_name"]) if "route_name" in item else ""
 
     if intent == "route_schedule":
         return (
-            f"下一班是 {item['route_name']}，"
+            f"下一班是 {route_zh}，"
             f"方向是 {item['direction']}，"
-            f"第 {item['trip_no']} 班，"
             f"於 {item['start_time']} 發車，"
             f"於 {item['end_time']} 抵達。"
         )
 
     if intent == "stop_upcoming":
-        return (
-            f"下一班來的車是 {item['route_name']}，"
-            f"於 {item['time']} 抵達，"
-            f"方向是 {item['direction']}。"
-        )
+        if "time" in item:
+            return (
+                f"下一班來的車是 {route_zh}，"
+                f"於 {item['time']} 抵達，"
+                f"方向是 {item['direction']}。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     if intent == "route_reach":
-        return (
-            f"最近一班可到達的班次是 {item['route_name']}，"
-            f"於 {item['time']} 會到，"
-            f"方向是 {item['direction']}。"
-        )
+        if "time" in item:
+            start_text = f"{item['start_time']} 發車，" if "start_time" in item else ""
+            return (
+                f"最近一班可到達的班次是 {route_zh}，"
+                f"{start_text}"
+                f"{item['time']} 會到，"
+                f"方向是 {item['direction']}。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     if intent == "route_plan":
-        return (
-            f"下一班可搭乘 {item['route_name']}，"
-            f"方向是 {item['direction']}，"
-            f"{item['depart_time']} 上車，"
-            f"{item['arrive_time']} 抵達。"
-        )
+        if "depart_time" in item and "arrive_time" in item:
+            return (
+                f"下一班可搭乘 {route_zh}，"
+                f"方向是 {item['direction']}，"
+                f"{item['depart_time']} 上車，"
+                f"{item['arrive_time']} 抵達。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     if intent == "return_plan":
-        return (
-            f"下一班回程可搭乘 {item['route_name']}，"
-            f"方向是 {item['direction']}，"
-            f"{item['depart_time']} 上車，"
-            f"{item['arrive_time']} 抵達。"
-        )
+        if "depart_time" in item and "arrive_time" in item:
+            return (
+                f"下一班回程可搭乘 {route_zh}，"
+                f"方向是 {item['direction']}，"
+                f"{item['depart_time']} 上車，"
+                f"{item['arrive_time']} 抵達。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     if intent == "travel_time":
-        return (
-            f"下一班可搭乘 {item['route_name']}，"
-            f"方向是 {item['direction']}，"
-            f"車程約 {item['duration_min']} 分鐘。"
-        )
+        if "duration_min" in item:
+            return (
+                f"下一班可搭乘 {route_zh}，"
+                f"方向是 {item['direction']}，"
+                f"車程約 {item['duration_min']} 分鐘。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     if intent == "arrival_feasible":
-        return (
-            f"可以，搭乘 {item['route_name']}，"
-            f"方向是 {item['direction']}，"
-            f"{item['depart_time']} 上車，"
-            f"{item['arrive_time']} 可到達。"
-        )
+        if "depart_time" in item and "arrive_time" in item:
+            return (
+                f"可以，搭乘 {route_zh}，"
+                f"方向是 {item['direction']}，"
+                f"{item['depart_time']} 上車，"
+                f"{item['arrive_time']} 可到達。"
+            )
+        return fallback_answer or "目前沒有資料。"
 
     return fallback_answer or "查詢成功。"
 
@@ -190,6 +211,7 @@ def build_paginated_response(
     answer: str,
     rows: list[dict],
     cursor: dict[str, Any],
+    original_question: str = "",
 ):
     offset = cursor.get("offset", 0)
     page_size = cursor.get("page_size", 1)
@@ -212,6 +234,11 @@ def build_paginated_response(
         fallback_answer=answer,
     )
 
+    if not page_items and original_question:
+        rag_text = rag_answer(original_question)
+        if rag_text and rag_text != "目前找不到可補充的說明資料。":
+            single_answer = f"{single_answer}\n\n{rag_text}"
+
     return {
         "answer": convert_output_text(single_answer),
         "items": page_items,
@@ -226,6 +253,7 @@ def build_paginated_response(
 # ---------------------------------
 def run_schema_query(schema):
     result_mode = getattr(schema, "result_mode", "all")
+    raw_question = getattr(schema, "debug", {}).get("raw_question", "")
 
     if schema.intent == "route_schedule" and schema.route:
         answer, rows = answer_route_schedule(
@@ -244,7 +272,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "stop_upcoming" and schema.stop:
         if result_mode == "next":
@@ -272,7 +300,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "route_reach" and schema.route and schema.destination:
         if result_mode == "next":
@@ -303,7 +331,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "route_plan" and schema.destination:
         origin_use = schema.origin or "斗六火車站"
@@ -321,7 +349,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "return_plan" and schema.origin:
         destination_use = schema.destination or "斗六火車站"
@@ -339,7 +367,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "travel_time" and schema.destination:
         origin_use = schema.origin or "斗六火車站"
@@ -357,7 +385,7 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
     if schema.intent == "arrival_feasible" and schema.destination and schema.arrive_by:
         origin_use = schema.origin or "斗六火車站"
@@ -377,10 +405,11 @@ def run_schema_query(schema):
             offset=0,
             page_size=1,
         )
-        return build_paginated_response(answer=answer, rows=rows, cursor=cursor)
+        return build_paginated_response(answer=answer, rows=rows, cursor=cursor, original_question=raw_question)
 
+    fallback = rag_answer(raw_question) if raw_question else "目前無法判斷這個問題。"
     return {
-        "answer": "目前無法判斷這個問題。",
+        "answer": fallback,
         "items": [],
         "cursor": None,
         "has_more": False,
