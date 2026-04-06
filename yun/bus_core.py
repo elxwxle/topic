@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from entity_resolver import canonicalize_place, normalize_text
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -44,32 +46,10 @@ def minutes_to_hhmm(minutes: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", "", text.strip())
-
-
 def load_json(path: Path) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def load_aliases() -> dict[str, str]:
-    raw = load_json(ALIASES_JSON)
-    alias_map = {}
-    for canonical, aliases in raw.items():
-        alias_map[normalize_text(canonical)] = canonical
-        if isinstance(aliases, list):
-            for alias in aliases:
-                alias_map[normalize_text(alias)] = canonical
-    return alias_map
-
-
-ALIAS_MAP = load_aliases()
-
-
-def canonicalize_place(name: str) -> str:
-    return ALIAS_MAP.get(normalize_text(name), name.strip())
 
 
 # -----------------------------
@@ -163,21 +143,51 @@ def chinese_time_phrase_to_hhmm(text: str) -> Optional[str]:
 
 def number_to_chinese(n: int) -> str:
     nums = "零一二三四五六七八九"
+
+    if n < 0:
+        return str(n)
+
     if n < 10:
         return nums[n]
+
     if n == 10:
         return "十"
+
     if n < 20:
         return "十" + nums[n % 10]
-    if n % 10 == 0:
-        return nums[n // 10] + "十"
-    return nums[n // 10] + "十" + nums[n % 10]
+
+    if n < 100:
+        tens = n // 10
+        ones = n % 10
+        if ones == 0:
+            return nums[tens] + "十"
+        return nums[tens] + "十" + nums[ones]
+
+    if n < 1000:
+        hundreds = n // 100
+        rest = n % 100
+        if rest == 0:
+            return nums[hundreds] + "百"
+        if rest < 10:
+            return nums[hundreds] + "百零" + nums[rest]
+        return nums[hundreds] + "百" + number_to_chinese(rest)
+
+    if n < 10000:
+        thousands = n // 1000
+        rest = n % 1000
+        if rest == 0:
+            return nums[thousands] + "千"
+        if rest < 100:
+            return nums[thousands] + "千零" + number_to_chinese(rest)
+        return nums[thousands] + "千" + number_to_chinese(rest)
+
+    return "".join(nums[int(ch)] if ch.isdigit() else ch for ch in str(n))
 
 
 def route_number_to_chinese(route: str) -> str:
     digit_map = "零一二三四五六七八九"
     result = ""
-    for ch in route:
+    for ch in str(route):
         if ch.isdigit():
             result += digit_map[int(ch)]
         else:
@@ -189,17 +199,35 @@ def time_to_chinese(time_str: str) -> str:
     try:
         h, m = map(int, time_str.split(":"))
         h_str = number_to_chinese(h)
+
         if m == 0:
-            return f"{h_str}點整"
-        if m < 10:
-            return f"{h_str}點零{number_to_chinese(m)}分"
+            return f"{h_str}點"
+        if m == 10:
+            return f"{h_str}點十分"
         return f"{h_str}點{number_to_chinese(m)}分"
     except Exception:
         return time_str
 
 
 def convert_output_text(text: str) -> str:
-    text = re.sub(r"\b\d{2}:\d{2}\b", lambda m: time_to_chinese(m.group(0)), text)
+    if not text:
+        return text
+
+    # 先轉時間，例如 07:10 -> 七點十分
+    text = re.sub(r"\b\d{1,2}:\d{2}\b", lambda m: time_to_chinese(m.group(0)), text)
+
+    # 再轉像「10分鐘」「3班」「2小時」這種一般數字
+    def replace_plain_number(match):
+        raw = match.group(1)
+        unit = match.group(2)
+        try:
+            num = int(raw)
+            return f"{number_to_chinese(num)}{unit}"
+        except Exception:
+            return match.group(0)
+
+    text = re.sub(r"(\d+)\s*(分鐘|分|小時|時|班|站|次)", replace_plain_number, text)
+
     return text
 
 
@@ -685,6 +713,8 @@ def find_direct_options(routes: dict, origin: str, destination: str, after: Opti
                         "depart_time": depart_time,
                         "arrive_time": arrive_time,
                         "duration_min": hhmm_to_minutes(arrive_time) - hhmm_to_minutes(depart_time),
+                        "origin": origin,
+                        "destination": destination,
                     }
                 )
 

@@ -87,3 +87,46 @@ NLU (nlu.py)
 回答整形與分頁
   ↓
 回傳 OpenWebUI
+
+
+
+使用者
+  ↓
+OpenWebUI
+  ↓
+Tool Layer
+  ├─ yunlin_bus_ask
+  └─ yunlin_bus_ask_more
+  ↓
+FastAPI (main.py)
+  ↓
+Request Validation
+  ↓
+State / Context Manager
+  ↓
+NLU (intent + slot filling + semantic parsing)
+  ↓
+Entity Resolver
+  ├─ alias normalize
+  ├─ stop normalize
+  └─ attraction ↔ stop mapping
+  ↓
+Query Router / Decision Engine
+  ├─ Structured Retrieval
+  │    ├─ bus_core.py
+  │    ├─ yun.json
+  │    └─ aliases.json
+  │
+  └─ RAG Fallback
+       ├─ rag_core.py
+       └─ rag_docs/*.md
+  ↓
+Response Formatter
+  ├─ route number formatting
+  ├─ time formatting
+  ├─ pagination
+  └─ answer template
+  ↓
+Logging / Debug Trace
+  ↓
+回傳 OpenWebUI
