@@ -1,3 +1,5 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic
+redis>=5.0.0
+requests

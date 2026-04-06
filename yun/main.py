@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional, Any
 
@@ -25,6 +26,7 @@ from nlu import (
 from formatter import ResponseFormatter
 from router import QueryRouter
 from state_manager import ConversationStateManager
+from state_store import MemoryStateStore, RedisStateStore
 from validator import (
     ValidationError,
     validate_cursor,
@@ -33,10 +35,13 @@ from validator import (
 )
 from logger import log_request
 
-
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 ALIASES_JSON = DATA_DIR / "aliases.json"
+
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "0") == "1"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ALLOW_DEFAULT_SESSION_ID = os.getenv("ALLOW_DEFAULT_SESSION_ID", "1") == "1"
 
 
 def load_json(path: Path) -> dict:
@@ -49,12 +54,32 @@ def load_aliases_raw() -> dict:
     return load_json(ALIASES_JSON)
 
 
+def build_state_manager() -> ConversationStateManager:
+    if REDIS_ENABLED:
+        store = RedisStateStore(url=REDIS_URL)
+    else:
+        store = MemoryStateStore()
+    return ConversationStateManager(store=store, expire_minutes=10)
+
+
+def resolve_session_id(session_id: Optional[str]) -> str:
+    # 開發階段可暫時允許 default
+    # 正式前端接好後，把 ALLOW_DEFAULT_SESSION_ID 設成 0
+    if session_id:
+        return validate_session_id(session_id)
+
+    if ALLOW_DEFAULT_SESSION_ID:
+        return "default"
+
+    raise ValidationError("session_id 為必填。")
+
+
 app = FastAPI(title="Yunlin Bus Assistant API")
 
 routes_data = load_routes()
 aliases_raw = load_aliases_raw()
 
-state_manager = ConversationStateManager(expire_minutes=10)
+state_manager = build_state_manager()
 formatter = ResponseFormatter()
 router = QueryRouter(
     routes_data=routes_data,
@@ -65,7 +90,7 @@ router = QueryRouter(
 
 class AskRequest(BaseModel):
     question: str
-    session_id: str = "default"
+    session_id: Optional[str] = None
 
 
 class ParseRequest(BaseModel):
@@ -73,7 +98,7 @@ class ParseRequest(BaseModel):
 
 
 class AskMoreRequest(BaseModel):
-    session_id: str = "default"
+    session_id: Optional[str] = None
     cursor: Optional[dict[str, Any]] = None
 
 
@@ -123,15 +148,20 @@ class ArrivalFeasibleRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"message": "Yunlin Bus API is running"}
+    return {
+        "message": "Yunlin Bus API is running",
+        "redis_enabled": REDIS_ENABLED,
+        "allow_default_session_id": ALLOW_DEFAULT_SESSION_ID,
+    }
 
 
 @app.post("/reload")
 def reload_data():
-    global routes_data, aliases_raw, router
+    global routes_data, aliases_raw, router, state_manager
 
     routes_data = load_routes()
     aliases_raw = load_aliases_raw()
+    state_manager = build_state_manager()
 
     router = QueryRouter(
         routes_data=routes_data,
@@ -210,7 +240,7 @@ def arrival_feasible(req: ArrivalFeasibleRequest):
 def ask(req: AskRequest):
     try:
         validate_question(req.question)
-        session_id = validate_session_id(req.session_id)
+        session_id = resolve_session_id(req.session_id)
     except ValidationError as e:
         return {
             "answer": str(e),
@@ -237,13 +267,14 @@ def ask(req: AskRequest):
 
     result = router.handle_schema(schema, session_id)
     result["schema"] = schema.to_dict()
+    result["session_id"] = session_id
     return result
 
 
 @app.post("/ask-more")
 def ask_more(req: AskMoreRequest):
     try:
-        session_id = validate_session_id(req.session_id)
+        session_id = resolve_session_id(req.session_id)
         validate_cursor(req.cursor)
     except ValidationError as e:
         return {
@@ -262,4 +293,6 @@ def ask_more(req: AskMoreRequest):
         },
     )
 
-    return router.handle_cursor(req.cursor, session_id)
+    result = router.handle_cursor(req.cursor, session_id)
+    result["session_id"] = session_id
+    return result

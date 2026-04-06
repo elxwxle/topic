@@ -5,64 +5,47 @@ from typing import Any, Optional
 
 
 class ConversationStateManager:
-    """
-    第一版先使用 in-memory store。
-    之後若要換成 Redis / DB，只要保留相同介面即可。
-    """
-
-    def __init__(self, expire_minutes: int = 10):
-        self._store: dict[str, dict[str, Any]] = {}
+    def __init__(self, store, expire_minutes: int = 10):
+        self.store = store
         self.expire_minutes = expire_minutes
+        self.expire_seconds = expire_minutes * 60
 
-    def _now(self) -> datetime:
-        return datetime.now()
+    def _now_iso(self) -> str:
+        return datetime.now().isoformat()
 
-    def _stamp(self, state: dict[str, Any]) -> dict[str, Any]:
-        state = dict(state)
-        state["_updated_at"] = self._now().isoformat()
-        return state
-
-    def get(self, session_id: str) -> dict[str, Any]:
-        state = self._store.get(session_id, {})
-        if not state:
-            return {}
-
-        if self.is_expired(state):
-            self.clear(session_id)
-            return {}
-
-        return state
-
-    def save(self, session_id: str, state: dict[str, Any]) -> None:
-        self._store[session_id] = self._stamp(state)
-
-    def update(self, session_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        current = self.get(session_id)
-        current.update(updates)
-        self.save(session_id, current)
-        return current
-
-    def clear(self, session_id: str) -> None:
-        self._store.pop(session_id, None)
-
-    def is_expired(self, state: dict[str, Any]) -> bool:
-        raw = state.get("_updated_at")
-        if not raw:
+    def _is_expired(self, state: dict) -> bool:
+        updated_at = state.get("updated_at")
+        if not updated_at:
             return False
 
         try:
-            updated_at = datetime.fromisoformat(raw)
+            dt = datetime.fromisoformat(updated_at)
         except Exception:
             return False
 
-        return self._now() - updated_at > timedelta(minutes=self.expire_minutes)
+        return datetime.now() > dt + timedelta(minutes=self.expire_minutes)
+
+    def get_state(self, session_id: str) -> dict:
+        state = self.store.get(session_id) or {}
+        if state and self._is_expired(state):
+            self.store.delete(session_id)
+            return {}
+        return state
+
+    def save(self, session_id: str, state: dict) -> None:
+        state = dict(state)
+        state["updated_at"] = self._now_iso()
+        self.store.set(session_id, state, self.expire_seconds)
+
+    def clear(self, session_id: str) -> None:
+        self.store.delete(session_id)
 
     def get_last_cursor(self, session_id: str) -> Optional[dict[str, Any]]:
-        state = self.get(session_id)
+        state = self.get_state(session_id)
         return state.get("last_cursor")
 
     def set_last_cursor(self, session_id: str, cursor: Optional[dict[str, Any]]) -> None:
-        state = self.get(session_id)
+        state = self.get_state(session_id)
         state["last_cursor"] = cursor
         self.save(session_id, state)
 
@@ -70,20 +53,9 @@ class ConversationStateManager:
         self,
         *,
         schema_dict: dict[str, Any],
-        cursor: Optional[dict[str, Any]] = None,
+        cursor: Optional[dict[str, Any]],
     ) -> dict[str, Any]:
-        """
-        將本輪查詢的重要欄位保存，供之後 ask-more 或 follow-up 使用。
-        """
         return {
-            "last_intent": schema_dict.get("intent"),
-            "origin": schema_dict.get("origin"),
-            "destination": schema_dict.get("destination"),
-            "route": schema_dict.get("route"),
-            "stop": schema_dict.get("stop"),
-            "after": schema_dict.get("after"),
-            "before": schema_dict.get("before"),
-            "arrive_by": schema_dict.get("arrive_by"),
-            "period_range": schema_dict.get("period_range"),
+            "last_schema": schema_dict,
             "last_cursor": cursor,
         }

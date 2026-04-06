@@ -25,6 +25,10 @@ except Exception:
         return "目前找不到可補充的說明資料。"
 
 
+DEFAULT_ORIGIN = "斗六火車站"
+DEFAULT_DESTINATION = "斗六火車站"
+
+
 class QueryRouter:
     def __init__(
         self,
@@ -37,7 +41,16 @@ class QueryRouter:
         self.formatter = formatter
         self.state_manager = state_manager
 
-    def build_paginated_response(
+    def _empty_result(self, answer: str) -> dict[str, Any]:
+        return {
+            "answer": answer,
+            "items": [],
+            "cursor": None,
+            "has_more": False,
+            "total_count": 0,
+        }
+
+    def _build_result(
         self,
         *,
         answer: str,
@@ -97,20 +110,30 @@ class QueryRouter:
 
         return result
 
+    def _save_query_state(
+        self,
+        *,
+        session_id: str,
+        schema,
+        cursor: Optional[dict[str, Any]],
+    ) -> None:
+        self.state_manager.save(
+            session_id,
+            self.state_manager.build_query_state(
+                schema_dict=schema.to_dict(),
+                cursor=cursor,
+            ),
+        )
+
     def handle_schema(self, schema, session_id: str) -> dict[str, Any]:
         try:
             resolve_schema_places(self.routes_data, schema)
             validate_schema_basic(schema)
         except ValidationError as e:
-            return {
-                "answer": str(e),
-                "items": [],
-                "cursor": None,
-                "has_more": False,
-                "total_count": 0,
-            }
+            return self._empty_result(str(e))
 
         result_mode = getattr(schema, "result_mode", "all")
+        page_size = 1 if result_mode == "single" else 9999
         raw_question = getattr(schema, "debug", {}).get("raw_question", "")
 
         log_router_decision(
@@ -129,6 +152,7 @@ class QueryRouter:
                 schema.before,
                 schema.period_range,
             )
+
             cursor = make_cursor(
                 intent="route_schedule",
                 route=schema.route,
@@ -136,22 +160,17 @@ class QueryRouter:
                 before=schema.before,
                 period_range=schema.period_range,
                 offset=0,
-                page_size=1 if result_mode == "single" else 9999,
+                page_size=page_size,
             )
-            result = self.build_paginated_response(
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            self.state_manager.save(
-                session_id,
-                self.state_manager.build_query_state(
-                    schema_dict=schema.to_dict(),
-                    cursor=result["cursor"],
-                ),
-            )
+            self._save_query_state(session_id=session_id, schema=schema, cursor=result["cursor"])
             return result
 
         if schema.intent == "stop_upcoming" and schema.stop:
@@ -161,28 +180,24 @@ class QueryRouter:
                 schema.after,
                 schema.before,
             )
+
             cursor = make_cursor(
                 intent="stop_upcoming",
                 stop=schema.stop,
                 after=schema.after,
                 before=schema.before,
                 offset=0,
-                page_size=1 if result_mode == "single" else 9999,
+                page_size=page_size,
             )
-            result = self.build_paginated_response(
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            self.state_manager.save(
-                session_id,
-                self.state_manager.build_query_state(
-                    schema_dict=schema.to_dict(),
-                    cursor=result["cursor"],
-                ),
-            )
+            self._save_query_state(session_id=session_id, schema=schema, cursor=result["cursor"])
             return result
 
         if schema.intent == "route_reach" and schema.route and schema.destination:
@@ -193,6 +208,7 @@ class QueryRouter:
                 schema.after,
                 schema.before,
             )
+
             cursor = make_cursor(
                 intent="route_reach",
                 route=schema.route,
@@ -200,32 +216,29 @@ class QueryRouter:
                 after=schema.after,
                 before=schema.before,
                 offset=0,
-                page_size=1 if result_mode == "single" else 9999,
+                page_size=page_size,
             )
-            result = self.build_paginated_response(
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            self.state_manager.save(
-                session_id,
-                self.state_manager.build_query_state(
-                    schema_dict=schema.to_dict(),
-                    cursor=result["cursor"],
-                ),
-            )
+            self._save_query_state(session_id=session_id, schema=schema, cursor=result["cursor"])
             return result
 
         if schema.intent == "route_plan" and schema.destination:
-            origin_use = schema.origin or "斗六火車站"
+            origin_use = schema.origin or DEFAULT_ORIGIN
+
             answer, rows = answer_route_plan(
                 self.routes_data,
                 schema.destination,
                 origin_use,
                 schema.after,
             )
+
             cursor = make_cursor(
                 intent="route_plan",
                 origin=origin_use,
@@ -234,15 +247,17 @@ class QueryRouter:
                 offset=0,
                 page_size=1,
             )
-            result = self.build_paginated_response(
+
+            schema_dict = schema.to_dict()
+            schema_dict["origin"] = origin_use
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            schema_dict = schema.to_dict()
-            schema_dict["origin"] = origin_use
             self.state_manager.save(
                 session_id,
                 self.state_manager.build_query_state(
@@ -253,13 +268,15 @@ class QueryRouter:
             return result
 
         if schema.intent == "return_plan" and schema.origin:
-            destination_use = schema.destination or "斗六火車站"
+            destination_use = schema.destination or DEFAULT_DESTINATION
+
             answer, rows = answer_return_plan(
                 self.routes_data,
                 schema.origin,
                 destination_use,
                 schema.after,
             )
+
             cursor = make_cursor(
                 intent="return_plan",
                 origin=schema.origin,
@@ -268,15 +285,17 @@ class QueryRouter:
                 offset=0,
                 page_size=1,
             )
-            result = self.build_paginated_response(
+
+            schema_dict = schema.to_dict()
+            schema_dict["destination"] = destination_use
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            schema_dict = schema.to_dict()
-            schema_dict["destination"] = destination_use
             self.state_manager.save(
                 session_id,
                 self.state_manager.build_query_state(
@@ -287,13 +306,15 @@ class QueryRouter:
             return result
 
         if schema.intent == "travel_time" and schema.destination:
-            origin_use = schema.origin or "斗六火車站"
+            origin_use = schema.origin or DEFAULT_ORIGIN
+
             answer, rows = answer_travel_time(
                 self.routes_data,
                 schema.destination,
                 origin_use,
                 schema.after,
             )
+
             cursor = make_cursor(
                 intent="travel_time",
                 origin=origin_use,
@@ -302,15 +323,17 @@ class QueryRouter:
                 offset=0,
                 page_size=1,
             )
-            result = self.build_paginated_response(
+
+            schema_dict = schema.to_dict()
+            schema_dict["origin"] = origin_use
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            schema_dict = schema.to_dict()
-            schema_dict["origin"] = origin_use
             self.state_manager.save(
                 session_id,
                 self.state_manager.build_query_state(
@@ -321,7 +344,8 @@ class QueryRouter:
             return result
 
         if schema.intent == "arrival_feasible" and schema.destination and schema.arrive_by:
-            origin_use = schema.origin or "斗六火車站"
+            origin_use = schema.origin or DEFAULT_ORIGIN
+
             answer, rows = answer_arrival_feasible(
                 self.routes_data,
                 schema.destination,
@@ -329,6 +353,7 @@ class QueryRouter:
                 schema.after,
                 schema.arrive_by,
             )
+
             cursor = make_cursor(
                 intent="arrival_feasible",
                 origin=origin_use,
@@ -338,15 +363,17 @@ class QueryRouter:
                 offset=0,
                 page_size=1,
             )
-            result = self.build_paginated_response(
+
+            schema_dict = schema.to_dict()
+            schema_dict["origin"] = origin_use
+
+            result = self._build_result(
                 answer=answer,
                 rows=rows,
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
-            schema_dict = schema.to_dict()
-            schema_dict["origin"] = origin_use
             self.state_manager.save(
                 session_id,
                 self.state_manager.build_query_state(
@@ -356,13 +383,7 @@ class QueryRouter:
             )
             return result
 
-        fallback = {
-            "answer": "目前無法判斷查詢意圖。",
-            "items": [],
-            "cursor": None,
-            "has_more": False,
-            "total_count": 0,
-        }
+        fallback = self._empty_result("目前無法判斷查詢意圖。")
 
         if raw_question:
             rag_text = rag_answer(raw_question)
@@ -379,30 +400,17 @@ class QueryRouter:
         try:
             validate_cursor(cursor)
         except ValidationError as e:
-            return {
-                "answer": str(e),
-                "items": [],
-                "cursor": None,
-                "has_more": False,
-                "total_count": 0,
-            }
+            return self._empty_result(str(e))
 
         if not cursor:
             cursor = self.state_manager.get_last_cursor(session_id)
 
         if not cursor:
-            return {
-                "answer": "沒有可延續的查詢。",
-                "items": [],
-                "cursor": None,
-                "has_more": False,
-                "total_count": 0,
-            }
+            return self._empty_result("沒有可延續的查詢。")
 
         intent = cursor.get("intent")
         offset = cursor.get("offset", 0)
         page_size = cursor.get("page_size", 1)
-
         route = cursor.get("route")
         stop = cursor.get("stop")
         origin = cursor.get("origin")
@@ -447,39 +455,33 @@ class QueryRouter:
             answer, rows = answer_route_plan(
                 self.routes_data,
                 destination,
-                origin or "斗六火車站",
+                origin or DEFAULT_ORIGIN,
                 after,
             )
         elif intent == "return_plan":
             answer, rows = answer_return_plan(
                 self.routes_data,
                 origin,
-                destination or "斗六火車站",
+                destination or DEFAULT_DESTINATION,
                 after,
             )
         elif intent == "travel_time":
             answer, rows = answer_travel_time(
                 self.routes_data,
                 destination,
-                origin or "斗六火車站",
+                origin or DEFAULT_ORIGIN,
                 after,
             )
         elif intent == "arrival_feasible":
             answer, rows = answer_arrival_feasible(
                 self.routes_data,
                 destination,
-                origin or "斗六火車站",
+                origin or DEFAULT_ORIGIN,
                 after,
                 before,
             )
         else:
-            return {
-                "answer": "cursor 無效，無法繼續查詢。",
-                "items": [],
-                "cursor": None,
-                "has_more": False,
-                "total_count": 0,
-            }
+            return self._empty_result("cursor 無效，無法繼續查詢。")
 
         page_items, next_offset, has_more = paginate_items(
             rows,

@@ -1,10 +1,11 @@
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /yun
 
-COPY . /app
+COPY requirements.txt /yun/requirements.txt
+RUN pip install --no-cache-dir -r /yun/requirements.txt
 
-RUN pip install --no-cache-dir fastapi uvicorn pydantic requests
+COPY . /yun
 
 EXPOSE 8000
 
