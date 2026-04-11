@@ -6,9 +6,15 @@ __pycache__/
 
 # Virtual environment
 .venv/
+.venv_linux/
 .venv_wsl/
 env/
 venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
 
 # VSCode
 .vscode/
@@ -20,11 +26,11 @@ Thumbs.db
 # Logs
 *.log
 
-# Docker
+# Docker / runtime
 *.pid
 
 # Temporary
 *.tmp
 
-# 如果 data 有暫存資料就加
+# Optional cache
 # data/cache/
