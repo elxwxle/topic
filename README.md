@@ -92,7 +92,7 @@ Entity Resolver
 Query Router / Decision Engine (router.py)
   ├─ Structured Retrieval
   │    ├─ bus_core.py
-  │    ├─ data/yun.json
+  │    ├─ data/api.json
   │    └─ data/aliases.json
   │
   └─ RAG Fallback
