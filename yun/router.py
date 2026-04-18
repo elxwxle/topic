@@ -74,7 +74,7 @@ class QueryRouter:
 
         self.state_manager.set_last_cursor(
             session_id,
-            next_cursor if has_more else cursor,
+            next_cursor if has_more else None,
         )
 
         single_answer = self.formatter.build_single_item_answer(
@@ -133,7 +133,7 @@ class QueryRouter:
             return self._empty_result(str(e))
 
         result_mode = getattr(schema, "result_mode", "all")
-        page_size = 1 if result_mode == "single" else 9999
+        page_size = 1 if result_mode in {"next", "single"} else 9999
         raw_question = getattr(schema, "debug", {}).get("raw_question", "")
 
         log_router_decision(
@@ -495,7 +495,7 @@ class QueryRouter:
 
         self.state_manager.set_last_cursor(
             session_id,
-            next_cursor if has_more else cursor,
+            next_cursor if has_more else None,
         )
 
         single_answer = self.formatter.build_single_item_answer(

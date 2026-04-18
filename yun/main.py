@@ -40,7 +40,6 @@ DATA_DIR = BASE_DIR / "data"
 ALIASES_JSON = DATA_DIR / "aliases.json"
 
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "0") == "1"
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ALLOW_DEFAULT_SESSION_ID = os.getenv("ALLOW_DEFAULT_SESSION_ID", "1") == "1"
 
 
@@ -56,15 +55,13 @@ def load_aliases_raw() -> dict:
 
 def build_state_manager() -> ConversationStateManager:
     if REDIS_ENABLED:
-        store = RedisStateStore(url=REDIS_URL)
+        store = RedisStateStore()
     else:
         store = MemoryStateStore()
     return ConversationStateManager(store=store, expire_minutes=10)
 
 
 def resolve_session_id(session_id: Optional[str]) -> str:
-    # 開發階段可暫時允許 default
-    # 正式前端接好後，把 ALLOW_DEFAULT_SESSION_ID 設成 0
     if session_id:
         return validate_session_id(session_id)
 
@@ -155,6 +152,16 @@ def root():
     }
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/version")
+def version():
+    return {"version": "2026-04-18"}
+
+
 @app.post("/reload")
 def reload_data():
     global routes_data, aliases_raw, router, state_manager
@@ -202,7 +209,9 @@ def stop_upcoming(req: StopUpcomingRequest):
 
 @app.post("/route-reach")
 def route_reach(req: RouteReachRequest):
-    answer, rows = answer_route_reach(routes_data, req.route, req.destination, req.after, req.before)
+    answer, rows = answer_route_reach(
+        routes_data, req.route, req.destination, req.after, req.before
+    )
     return {"answer": convert_output_text(answer), "rows": rows}
 
 
@@ -214,7 +223,9 @@ def route_plan(req: RoutePlanRequest):
 
 @app.post("/return-plan")
 def return_plan(req: ReturnPlanRequest):
-    answer, rows = answer_return_plan(routes_data, req.from_place, req.destination, req.after)
+    answer, rows = answer_return_plan(
+        routes_data, req.from_place, req.destination, req.after
+    )
     return {"answer": convert_output_text(answer), "rows": rows}
 
 

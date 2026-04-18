@@ -1,9 +1,9 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
-pydantic
+pydantic==2.11.7
 redis>=5.0.0
-requests
-python-dotenv
+requests==2.32.3
+python-dotenv==1.0.1
 
 livekit-agents[silero,turn-detector]~=1.4
 livekit-plugins-ai-coustics

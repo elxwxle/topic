@@ -1,10 +1,9 @@
 import json
+import os
+import time
 from typing import Optional
 
-try:
-    import redis
-except Exception:
-    redis = None
+import redis
 
 
 class MemoryStateStore:
@@ -12,38 +11,59 @@ class MemoryStateStore:
         self._data: dict[str, dict] = {}
 
     def get(self, session_id: str) -> Optional[dict]:
-        return self._data.get(session_id)
+        item = self._data.get(session_id)
+        if not item:
+            return None
+
+        expire_at = item.get("expire_at")
+        if expire_at is not None and time.time() > expire_at:
+            self._data.pop(session_id, None)
+            return None
+
+        return item.get("value")
 
     def set(self, session_id: str, value: dict, ttl_seconds: int) -> None:
-        # 記憶體版先不做真正 TTL，交給 state_manager 控制
-        self._data[session_id] = value
+        self._data[session_id] = {
+            "value": value,
+            "expire_at": time.time() + ttl_seconds if ttl_seconds > 0 else None,
+        }
 
     def delete(self, session_id: str) -> None:
         self._data.pop(session_id, None)
 
 
 class RedisStateStore:
-    def __init__(self, url: str = "redis://localhost:6379/0", prefix: str = "yunbus:session:"):
-        if redis is None:
-            raise RuntimeError("redis 套件未安裝，請先 pip install redis")
-        self.client = redis.Redis.from_url(url, decode_responses=True)
-        self.prefix = prefix
+    def __init__(self):
+        host = os.getenv("REDIS_HOST", "redis")
+        port = int(os.getenv("REDIS_PORT", "6379"))
+        db = int(os.getenv("REDIS_DB", "0"))
+        password = os.getenv("REDIS_PASSWORD")
 
-    def _key(self, session_id: str) -> str:
-        return f"{self.prefix}{session_id}"
+        self.client = redis.Redis(
+            host=host,
+            port=port,
+            db=db,
+            password=password,
+            decode_responses=True,
+        )
 
     def get(self, session_id: str) -> Optional[dict]:
-        raw = self.client.get(self._key(session_id))
+        raw = self.client.get(session_id)
         if not raw:
             return None
         return json.loads(raw)
 
     def set(self, session_id: str, value: dict, ttl_seconds: int) -> None:
-        self.client.set(
-            self._key(session_id),
-            json.dumps(value, ensure_ascii=False),
-            ex=ttl_seconds,
-        )
+        self.client.set(session_id, json.dumps(value), ex=ttl_seconds)
 
     def delete(self, session_id: str) -> None:
-        self.client.delete(self._key(session_id))
+        self.client.delete(session_id)
+
+
+def create_state_store():
+    backend = os.getenv("STATE_STORE_BACKEND", "memory").lower()
+
+    if backend == "redis":
+        return RedisStateStore()
+
+    return MemoryStateStore()
