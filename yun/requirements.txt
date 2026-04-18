@@ -8,3 +8,6 @@ python-dotenv
 livekit-agents[silero,turn-detector]~=1.4
 livekit-plugins-ai-coustics
 livekit-plugins-noise-cancellation~=0.2
+
+google-genai
+python-dotenv

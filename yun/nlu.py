@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Callable, Optional
 
-import requests
+from llm_client import LLMClient
 
 
 CH_NUM_MAP = {
@@ -528,8 +528,14 @@ def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
     return None
 
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:2b")
+_llm_client: Optional[LLMClient] = None
+
+
+def get_llm_client() -> LLMClient:
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = LLMClient()
+    return _llm_client
 
 
 def llm_extract_schema(question: str) -> dict[str, Any]:
@@ -576,37 +582,72 @@ def llm_extract_schema(question: str) -> dict[str, Any]:
 {question}
 """.strip()
 
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data.get("response", "").strip()
+    def llm_extract_schema(question: str) -> dict[str, Any]:
+    prompt = f"""
+請將以下雲林公車使用者問題解析成 JSON。
 
+只能輸出 JSON，不要輸出其他文字。
+
+可用 intent:
+- route_schedule
+- stop_upcoming
+- route_reach
+- route_plan
+- return_plan
+- travel_time
+- arrival_feasible
+- unknown
+
+欄位:
+- intent
+- route
+- stop
+- origin
+- destination
+- after
+- before
+- arrive_by
+- period_label
+- period_range
+- result_mode
+- confidence
+
+規則:
+1. 如果沒有值，請填 null。
+2. confidence 請填 0 到 1 之間的小數。
+3. period_range 若有值，格式要是 ["下午","12:00","17:59"] 這種陣列。
+4. 只輸出一個 JSON 物件，不要加說明。
+5. route 例如 "201"、"Y01"。
+6. 若是「九點前能不能到雲科大」這類，intent 應為 arrival_feasible，arrive_by 應為 "09:00"。
+7. 若是「如何到雲科」這類，intent 應為 route_plan。
+8. result_mode 可用值為 "all" 或 "next"。
+9. 若問題是「下一班」「最近一班」「有沒有到某地」這種，result_mode 應為 "next"。
+
+使用者問題：
+{question}
+""".strip()
+
+    try:
+        text = get_llm_client().generate(prompt)
         obj = _extract_json_object(text)
+
         if not obj:
             return _default_unknown_schema()
 
         schema = _default_unknown_schema()
         schema.update(obj)
 
-        if schema.get("period_range") and isinstance(schema["period_range"], list) and len(schema["period_range"]) == 3:
+        if (
+            schema.get("period_range")
+            and isinstance(schema["period_range"], list)
+            and len(schema["period_range"]) == 3
+        ):
             schema["period_range"] = tuple(schema["period_range"])
 
         try:
             schema["confidence"] = float(schema.get("confidence", 0.0) or 0.0)
         except Exception:
             schema["confidence"] = 0.0
-
-        if schema.get("result_mode") not in {"all", "next"}:
-            schema["result_mode"] = "all"
 
         return schema
 
