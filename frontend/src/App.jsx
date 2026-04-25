@@ -1,7 +1,8 @@
-import HomePage from "./pages/HomePage"
+import AskForm from "./components/AskForm";
+import "./App.css";
 
 function App() {
-  return <HomePage />
+  return <AskForm />;
 }
 
-export default App
+export default App;

@@ -1,15 +1,12 @@
 const BASE_URL = "http://127.0.0.1:8000";
 
-export async function askBus(question, sessionId = "web-demo") {
-  const response = await fetch(`${BASE_URL}/ask`, {
+async function postJson(path, body) {
+  const response = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      question,
-      session_id: sessionId,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -17,4 +14,18 @@ export async function askBus(question, sessionId = "web-demo") {
   }
 
   return await response.json();
+}
+
+export async function askBus(question, sessionId = "web-demo") {
+  return await postJson("/ask", {
+    question,
+    session_id: sessionId,
+  });
+}
+
+export async function askBusMore(sessionId = "web-demo", cursor = null) {
+  return await postJson("/ask-more", {
+    session_id: sessionId,
+    cursor,
+  });
 }

@@ -737,34 +737,41 @@ def answer_route_plan(
         return f"從 {origin} 到 {destination}，目前找不到合適的直達路線。", []
 
     effective_after = after or current_time_str()
+    effective_after_min = hhmm_to_minutes(effective_after)
 
     future_plans = [
         p for p in all_plans
-        if hhmm_to_minutes(p["depart_time"]) >= hhmm_to_minutes(effective_after)
+        if hhmm_to_minutes(p["depart_time"]) >= effective_after_min
     ]
 
     if future_plans:
-        best = future_plans[0]
-        duration_zh = number_to_chinese(best["duration_min"])
-        return (
-            f"從 {origin} 到 {destination} 可以直達。"
-            f"下一班請搭乘 {route_number_to_chinese(best['route_name'])}，"
-            f"方向是 {best['direction']}，"
-            f"於 {origin} {best['depart_time']} 上車，"
-            f"預計 {best['arrive_time']} 抵達 {destination}，"
-            f"車程約 {duration_zh} 分鐘。"
-        ), [best]
+        first = future_plans[0]
+        duration_zh = number_to_chinese(first["duration_min"])
 
-    next_day_first = all_plans[0]
-    duration_zh = number_to_chinese(next_day_first["duration_min"])
-    return (
+        answer = (
+            f"從 {origin} 到 {destination} 可以直達。"
+            f"下一班請搭乘 {route_number_to_chinese(first['route_name'])}，"
+            f"方向是 {first['direction']}，"
+            f"於 {origin} {first['depart_time']} 上車，"
+            f"預計 {first['arrive_time']} 抵達 {destination}，"
+            f"車程約 {duration_zh} 分鐘。"
+        )
+
+        return answer, future_plans
+
+    first = all_plans[0]
+    duration_zh = number_to_chinese(first["duration_min"])
+
+    answer = (
         f"從 {origin} 到 {destination} 今天的末班車已過。"
-        f"明天最早一班可搭乘 {route_number_to_chinese(next_day_first['route_name'])}，"
-        f"方向是 {next_day_first['direction']}，"
-        f"於 {origin} {next_day_first['depart_time']} 上車，"
-        f"預計 {next_day_first['arrive_time']} 抵達 {destination}，"
+        f"明天最早一班可搭乘 {route_number_to_chinese(first['route_name'])}，"
+        f"方向是 {first['direction']}，"
+        f"於 {origin} {first['depart_time']} 上車，"
+        f"預計 {first['arrive_time']} 抵達 {destination}，"
         f"車程約 {duration_zh} 分鐘。"
-    ), [next_day_first]
+    )
+
+    return answer, all_plans
 
 
 def answer_return_plan(routes: dict, from_place: str, destination: str = DEFAULT_RETURN_DEST, after: Optional[str] = None) -> tuple[str, list[dict]]:

@@ -239,6 +239,9 @@ class QueryRouter:
                 schema.after,
             )
 
+            if not rows:
+                return self._empty_result(answer)
+
             cursor = make_cursor(
                 intent="route_plan",
                 origin=origin_use,
@@ -248,16 +251,28 @@ class QueryRouter:
                 page_size=1,
             )
 
+            page_items, has_more, next_offset = paginate_items(
+                rows,
+                cursor["offset"],
+                cursor["page_size"]
+            )
+
+            cursor["offset"] = next_offset
+
             schema_dict = schema.to_dict()
             schema_dict["origin"] = origin_use
 
             result = self._build_result(
                 answer=answer,
-                rows=rows,
+                rows=page_items,   
                 cursor=cursor,
                 session_id=session_id,
                 original_question=raw_question,
             )
+
+            result["has_more"] = has_more
+            result["total_count"] = len(rows)
+
             self.state_manager.save(
                 session_id,
                 self.state_manager.build_query_state(
@@ -265,6 +280,7 @@ class QueryRouter:
                     cursor=result["cursor"],
                 ),
             )
+
             return result
 
         if schema.intent == "return_plan" and schema.origin:
