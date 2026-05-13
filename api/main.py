@@ -3,56 +3,39 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from bus_core import (
-    load_routes,
+    answer_arrival_feasible,
+    answer_return_plan,
+    answer_route_plan,
+    answer_route_reach,
     answer_route_schedule,
     answer_stop_upcoming,
-    answer_route_reach,
-    answer_route_plan,
-    answer_return_plan,
     answer_travel_time,
-    answer_arrival_feasible,
     convert_output_text,
+    load_routes,
 )
-
-from nlu import (
-    parse_with_optional_llm,
-    llm_extract_schema,
-)
-
 from formatter import ResponseFormatter
+from logger import log_request
+from nlu import llm_extract_schema, parse_with_optional_llm
+from realtime_core import (
+    answer_realtime_eta_from_question,
+    answer_realtime_position_from_question,
+    extract_route_from_question,
+    is_position_question,
+    is_realtime_question,
+    legacy_response,
+)
 from router import QueryRouter
 from state_manager import ConversationStateManager
 from state_store import MemoryStateStore, RedisStateStore
-
-from validator import (
-    ValidationError,
-    validate_cursor,
-    validate_question,
-    validate_session_id,
-)
-
-from logger import log_request
-
-from realtime_core import (
-    is_realtime_question,
-    is_position_question,
-    extract_route_from_question,
-    answer_realtime_eta_from_question,
-    answer_realtime_position_from_question,
-    legacy_response,
-)
-
-from tdx_client import (
-    get_yunlin_routes,
-    get_yunlin_realtime,
-)
+from tdx_client import get_yunlin_realtime, get_yunlin_routes, get_yunlin_stop_of_route
+from validator import ValidationError, validate_cursor, validate_question, validate_session_id
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -66,7 +49,6 @@ ALLOW_DEFAULT_SESSION_ID = os.getenv("ALLOW_DEFAULT_SESSION_ID", "1") == "1"
 def load_json(path: Path) -> dict:
     if not path.exists():
         return {}
-
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -93,19 +75,56 @@ def resolve_session_id(session_id: Optional[str]) -> str:
     raise ValidationError("session_id 為必填。")
 
 
+def get_last_realtime_context(session_id: str) -> dict[str, Any]:
+    state = state_manager.get_state(session_id)
+    context = state.get("last_realtime")
+
+    if isinstance(context, dict):
+        return context
+
+    return {}
+
+
+def save_last_realtime_context(
+    session_id: str,
+    context: Optional[dict[str, Any]],
+) -> None:
+    if not context:
+        return
+
+    state = state_manager.get_state(session_id)
+
+    previous_context = state.get("last_realtime")
+    if isinstance(previous_context, dict):
+        merged_context = dict(previous_context)
+    else:
+        merged_context = {}
+
+    for key, value in context.items():
+        if value is not None:
+            merged_context[key] = value
+
+    state["last_realtime"] = merged_context
+    state_manager.save(session_id, state)
+
+
+def strip_internal_fields(result: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(result)
+    cleaned.pop("_context", None)
+    return cleaned
+
+
 app = FastAPI(title="Yunlin Bus Assistant API")
 
 routes_data = load_routes()
 aliases_raw = load_aliases_raw()
 state_manager = build_state_manager()
 formatter = ResponseFormatter()
-
 router = QueryRouter(
     routes_data=routes_data,
     formatter=formatter,
     state_manager=state_manager,
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -193,7 +212,7 @@ def health():
 
 @app.get("/version")
 def version():
-    return {"version": "2026-05-14-realtime-tdx"}
+    return {"version": "2026-05-14-realtime-traditional-context-next-bus"}
 
 
 @app.post("/reload")
@@ -203,7 +222,6 @@ def reload_data():
     routes_data = load_routes()
     aliases_raw = load_aliases_raw()
     state_manager = build_state_manager()
-
     router = QueryRouter(
         routes_data=routes_data,
         formatter=formatter,
@@ -226,7 +244,6 @@ def parse_only(req: ParseRequest):
         raw_aliases=aliases_raw,
         llm_extractor=llm_extract_schema,
     )
-
     return schema.to_dict()
 
 
@@ -238,7 +255,6 @@ def route_schedule(req: RouteScheduleRequest):
         req.after,
         req.before,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -253,7 +269,6 @@ def stop_upcoming(req: StopUpcomingRequest):
         req.after,
         req.before,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -269,7 +284,6 @@ def route_reach(req: RouteReachRequest):
         req.after,
         req.before,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -284,7 +298,6 @@ def route_plan(req: RoutePlanRequest):
         req.origin,
         req.after,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -299,7 +312,6 @@ def return_plan(req: ReturnPlanRequest):
         req.destination,
         req.after,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -314,7 +326,6 @@ def travel_time(req: TravelTimeRequest):
         req.origin,
         req.after,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -330,7 +341,6 @@ def arrival_feasible(req: ArrivalFeasibleRequest):
         req.after,
         req.arrive_by,
     )
-
     return {
         "answer": convert_output_text(answer),
         "rows": rows,
@@ -359,51 +369,53 @@ def ask(req: AskRequest):
         },
     )
 
-    # =====================================================
-    # 即時問題優先走 TDX
-    # 但回傳格式維持舊版 /ask 格式：
-    # {
-    #   "answer": "...",
-    #   "items": [],
-    #   "cursor": null,
-    #   "has_more": false,
-    #   "total_count": 0
-    # }
-    # =====================================================
     if is_realtime_question(req.question):
-        route = extract_route_from_question(req.question)
+        explicit_route = extract_route_from_question(req.question)
+        last_realtime = get_last_realtime_context(session_id)
+
+        context_route = last_realtime.get("route")
+        context_stop = last_realtime.get("stop")
+        context_last_answer_time = last_realtime.get("last_answer_time")
 
         try:
             if is_position_question(req.question):
-                return answer_realtime_position_from_question(
+                result = answer_realtime_position_from_question(
                     question=req.question,
-                    route=route,
+                    route=explicit_route,
+                    context_route=context_route,
+                )
+            else:
+                result = answer_realtime_eta_from_question(
+                    question=req.question,
+                    routes_data=routes_data,
+                    route=explicit_route,
+                    context_route=context_route,
+                    context_stop=context_stop,
+                    context_last_answer_time=context_last_answer_time,
                 )
 
-            return answer_realtime_eta_from_question(
-                question=req.question,
-                route=route,
+            save_last_realtime_context(
+                session_id=session_id,
+                context=result.get("_context"),
             )
 
-        except Exception as e:
+            return strip_internal_fields(result)
+
+        except Exception:
             return legacy_response(
-                answer=f"目前即時公車資料暫時無法取得，請稍後再試。錯誤原因：{str(e)}",
+                answer="目前即時公車資料暫時無法取得，請稍後再試。",
                 items=[],
                 cursor=None,
                 has_more=False,
                 total_count=0,
             )
 
-    # =====================================================
-    # 非即時問題才走原本 NLU / 本地資料流程
-    # =====================================================
     schema = parse_with_optional_llm(
         question=req.question,
         routes=routes_data,
         raw_aliases=aliases_raw,
         llm_extractor=llm_extract_schema,
     )
-
     result = router.handle_schema(schema, session_id)
 
     return legacy_response(
@@ -421,13 +433,13 @@ def ask_more(req: AskMoreRequest):
         session_id = resolve_session_id(req.session_id)
         validate_cursor(req.cursor)
     except ValidationError as e:
-        return {
-            "answer": str(e),
-            "items": [],
-            "cursor": None,
-            "has_more": False,
-            "total_count": 0,
-        }
+        return legacy_response(
+            answer=str(e),
+            items=[],
+            cursor=None,
+            has_more=False,
+            total_count=0,
+        )
 
     log_request(
         "ask_more",
@@ -439,23 +451,29 @@ def ask_more(req: AskMoreRequest):
 
     result = router.handle_cursor(req.cursor, session_id)
 
-    # 這裡保留原本 ask-more 的 session_id，
-    # 因為分頁查詢可能需要前端知道目前 session。
-    result["session_id"] = session_id
+    return legacy_response(
+        answer=result.get("answer", ""),
+        items=result.get("items", []),
+        cursor=result.get("cursor"),
+        has_more=result.get("has_more", False),
+        total_count=result.get("total_count", len(result.get("items", []))),
+    )
 
-    return result
-
-
-# =====================================================
-# TDX 測試用 endpoints
-# 這幾個方便你用 curl / docs 測即時資料，不影響前端原本流程。
-# =====================================================
 
 @app.get("/tdx/routes")
 def tdx_routes():
     data = get_yunlin_routes()
-
     return {
+        "count": len(data),
+        "items": data,
+    }
+
+
+@app.get("/tdx/stop-of-route/{route_name}")
+def tdx_stop_of_route(route_name: str):
+    data = get_yunlin_stop_of_route(route_name)
+    return {
+        "route": route_name,
         "count": len(data),
         "items": data,
     }
@@ -465,6 +483,7 @@ def tdx_routes():
 def tdx_eta(route_name: str):
     return answer_realtime_eta_from_question(
         question=f"{route_name} 現在多久到？",
+        routes_data=routes_data,
         route=route_name,
     )
 
@@ -473,6 +492,7 @@ def tdx_eta(route_name: str):
 def tdx_eta_by_stop(route_name: str, stop_name: str):
     return answer_realtime_eta_from_question(
         question=f"{route_name} {stop_name} 現在多久到？",
+        routes_data=routes_data,
         route=route_name,
         stop=stop_name,
     )
@@ -481,7 +501,6 @@ def tdx_eta_by_stop(route_name: str, stop_name: str):
 @app.get("/tdx/realtime")
 def tdx_realtime_all():
     data = get_yunlin_realtime()
-
     return {
         "count": len(data),
         "items": data,
