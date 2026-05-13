@@ -19,12 +19,14 @@ function isMoreQuestion(text) {
 
 function AskForm() {
   const [input, setInput] = useState("");
+
   const [messages, setMessages] = useState([
     {
       role: "assistant",
       text: "您好！我是 AI 站長～有任何關於公車路線、班次、票價的問題，都可以問我喔！",
     },
   ]);
+
   const [lastResult, setLastResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -32,7 +34,7 @@ function AskForm() {
     e.preventDefault();
 
     const question = input.trim();
-    if (!question) return;
+    if (!question || loading) return;
 
     setInput("");
 
@@ -54,6 +56,7 @@ function AskForm() {
             role: "assistant",
             text: "請先問一個公車問題，我才知道要幫你查哪一班喔。",
           };
+
           setMessages((prev) => [...prev, warning]);
           return;
         }
@@ -88,24 +91,30 @@ function AskForm() {
     <main className="page-layout">
       <section className="left-panel">
         <section className="ad-section">
-          <button className="carousel-btn">‹</button>
+          <button className="carousel-btn" type="button" aria-label="上一張廣告">
+            ‹
+          </button>
 
-          <div className="ad-card">
-            <div className="ad-image">圖片</div>
-            <p>廣告 1</p>
+          <div className="ad-cards">
+            <div className="ad-card">
+              <div className="ad-image">圖片</div>
+              <p>廣告 1</p>
+            </div>
+
+            <div className="ad-card">
+              <div className="ad-image">圖片</div>
+              <p>廣告 2</p>
+            </div>
+
+            <div className="ad-card">
+              <div className="ad-image">圖片</div>
+              <p>廣告 3</p>
+            </div>
           </div>
 
-          <div className="ad-card">
-            <div className="ad-image">圖片</div>
-            <p>廣告 2</p>
-          </div>
-
-          <div className="ad-card">
-            <div className="ad-image">圖片</div>
-            <p>廣告 3</p>
-          </div>
-
-          <button className="carousel-btn">›</button>
+          <button className="carousel-btn" type="button" aria-label="下一張廣告">
+            ›
+          </button>
 
           <div className="carousel-dots">
             <span className="dot active"></span>
@@ -130,7 +139,7 @@ function AskForm() {
           <h1>AI 站長</h1>
 
           <div className="mascot-area">
-            <div className="mascot-face">👩‍✈️</div>
+            <div className="mascot-face">👨‍✈️</div>
             <p>雲林公車服務中</p>
           </div>
         </section>
@@ -161,6 +170,7 @@ function AskForm() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="請輸入您的問題，例如：雲科大下一班車"
+            disabled={loading}
           />
 
           <button type="submit" disabled={loading}>

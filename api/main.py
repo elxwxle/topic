@@ -37,6 +37,14 @@ from validator import (
 from logger import log_request
 
 
+from tdx_client import (
+    get_yunlin_routes,
+    get_yunlin_stop_of_route,
+    get_yunlin_eta,
+    get_yunlin_realtime_by_frequency,
+)
+
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 ALIASES_JSON = DATA_DIR / "aliases.json"
@@ -321,3 +329,86 @@ def ask_more(req: AskMoreRequest):
     result = router.handle_cursor(req.cursor, session_id)
     result["session_id"] = session_id
     return result
+
+
+@app.get("/tdx/routes")
+def tdx_routes():
+    data = get_yunlin_routes()
+    return {
+        "count": len(data),
+        "routes": data,
+    }
+
+
+@app.get("/tdx/stop-of-route/{route_name}")
+def tdx_stop_of_route(route_name: str):
+    data = get_yunlin_stop_of_route(route_name)
+    return {
+        "route": route_name,
+        "data": data,
+    }
+
+
+@app.get("/tdx/eta/{route_name}")
+def tdx_eta(route_name: str):
+    data = get_yunlin_eta(route_name)
+
+    simple_data = []
+
+    for item in data:
+        stop_name = item.get("StopName", {}).get("Zh_tw")
+        route_name_zh = item.get("RouteName", {}).get("Zh_tw")
+        direction = item.get("Direction")
+        estimate_time = item.get("EstimateTime")
+        stop_status = item.get("StopStatus")
+
+        if estimate_time is not None:
+            estimate_text = f"{estimate_time // 60} 分鐘"
+        else:
+            estimate_text = get_stop_status_text(stop_status)
+
+        simple_data.append({
+            "route": route_name_zh,
+            "stop": stop_name,
+            "direction": direction,
+            "estimate_time": estimate_time,
+            "estimate_text": estimate_text,
+            "stop_status": stop_status,
+        })
+
+    return {
+        "route": route_name,
+        "count": len(simple_data),
+        "items": simple_data,
+    }
+
+
+@app.get("/tdx/realtime")
+def tdx_realtime():
+    data = get_yunlin_realtime_by_frequency()
+    return {
+        "count": len(data),
+        "items": data,
+    }
+
+
+@app.get("/tdx/realtime/{route_name}")
+def tdx_realtime_by_route(route_name: str):
+    data = get_yunlin_realtime_by_frequency(route_name)
+    return {
+        "route": route_name,
+        "count": len(data),
+        "items": data,
+    }
+
+
+def get_stop_status_text(status: int | None) -> str:
+    status_map = {
+        0: "正常",
+        1: "尚未發車",
+        2: "交管不停靠",
+        3: "末班車已過",
+        4: "今日未營運",
+    }
+
+    return status_map.get(status, "無預估資料")
