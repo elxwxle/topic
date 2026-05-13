@@ -41,9 +41,13 @@ from tdx_client import (
     get_yunlin_routes,
     get_yunlin_stop_of_route,
     get_yunlin_eta,
-    get_yunlin_realtime_by_frequency,
+    get_yunlin_realtime,
 )
-
+from realtime_core import (
+    is_realtime_question,
+    answer_realtime_eta,
+    answer_realtime_position,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -298,9 +302,43 @@ def ask(req: AskRequest):
         llm_extractor=llm_extract_schema,
     )
 
+    # =====================================================
+    # 即時優先：凡是現在 / 下一班 / 多久到 / 幾分鐘 / 位置
+    # 優先走 TDX，而不是 yun.json
+    # =====================================================
+    if is_realtime_question(req.question):
+        try:
+            if any(k in req.question for k in ["在哪", "位置", "目前在哪", "車在哪"]):
+                result = answer_realtime_position(route=schema.route)
+            else:
+                result = answer_realtime_eta(
+                    route=schema.route,
+                    stop=schema.stop or schema.destination or schema.origin,
+                )
+
+            result["schema"] = schema.to_dict()
+            result["session_id"] = session_id
+            result["realtime_mode"] = True
+            return result
+
+        except Exception as e:
+            # TDX 失敗時才退回原本本地資料
+            fallback_result = router.handle_schema(schema, session_id)
+            fallback_result["schema"] = schema.to_dict()
+            fallback_result["session_id"] = session_id
+            fallback_result["realtime_mode"] = False
+            fallback_result["tdx_error"] = str(e)
+            fallback_result["answer"] = (
+                "目前 TDX 即時資料暫時無法取得，以下先使用本地資料查詢：\n\n"
+                + fallback_result.get("answer", "")
+            )
+            return fallback_result
+
+    # 非即時問題才走原本本地資料
     result = router.handle_schema(schema, session_id)
     result["schema"] = schema.to_dict()
     result["session_id"] = session_id
+    result["realtime_mode"] = False
     return result
 
 

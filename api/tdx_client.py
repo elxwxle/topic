@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import os
 import time
+from typing import Any, Optional
+
 import requests
 from dotenv import load_dotenv
 
@@ -10,18 +14,32 @@ TDX_CLIENT_SECRET = os.getenv("TDX_CLIENT_SECRET")
 
 TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 BASE_URL = "https://tdx.transportdata.tw/api/basic/v2"
-
 CITY = "YunlinCounty"
 
-_access_token = None
-_token_expire_time = 0
+_access_token: Optional[str] = None
+_token_expire_time: float = 0
+
+# 簡單快取，避免每次查詢都打 TDX
+_cache: dict[str, tuple[float, Any]] = {}
 
 
-def get_access_token():
-    """
-    取得 TDX Access Token。
-    做簡單快取，避免每次 API 都重新要 token。
-    """
+def _get_cache(key: str, ttl_seconds: int) -> Any | None:
+    item = _cache.get(key)
+    if not item:
+        return None
+
+    saved_time, data = item
+    if time.time() - saved_time <= ttl_seconds:
+        return data
+
+    return None
+
+
+def _set_cache(key: str, data: Any) -> None:
+    _cache[key] = (time.time(), data)
+
+
+def get_access_token() -> str:
     global _access_token, _token_expire_time
 
     now = time.time()
@@ -30,7 +48,9 @@ def get_access_token():
         return _access_token
 
     if not TDX_CLIENT_ID or not TDX_CLIENT_SECRET:
-        raise RuntimeError("缺少 TDX_CLIENT_ID 或 TDX_CLIENT_SECRET，請檢查 .env")
+        raise RuntimeError(
+            "缺少 TDX_CLIENT_ID 或 TDX_CLIENT_SECRET，請確認 api/.env 是否設定完成。"
+        )
 
     data = {
         "grant_type": "client_credentials",
@@ -42,74 +62,88 @@ def get_access_token():
     response.raise_for_status()
 
     token_data = response.json()
-
     _access_token = token_data["access_token"]
-    expires_in = token_data.get("expires_in", 3600)
 
-    # 提早 60 秒過期，避免剛好 token 失效
+    expires_in = int(token_data.get("expires_in", 3600))
     _token_expire_time = now + expires_in - 60
 
     return _access_token
 
 
-def get_headers():
-    token = get_access_token()
-
+def get_headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {get_access_token()}",
         "Accept": "application/json",
     }
 
 
-def get_yunlin_routes():
-    """
-    取得雲林所有公車路線。
-    """
-    url = f"{BASE_URL}/Bus/Route/City/{CITY}?$format=JSON"
+def tdx_get(path: str, cache_key: Optional[str] = None, ttl_seconds: int = 20) -> Any:
+    if cache_key:
+        cached = _get_cache(cache_key, ttl_seconds)
+        if cached is not None:
+            return cached
 
-    response = requests.get(url, headers=get_headers(), timeout=10)
+    url = f"{BASE_URL}{path}"
+    response = requests.get(url, headers=get_headers(), timeout=15)
     response.raise_for_status()
 
-    return response.json()
+    data = response.json()
+
+    if cache_key:
+        _set_cache(cache_key, data)
+
+    return data
 
 
-def get_yunlin_stop_of_route(route_name: str):
+def get_yunlin_routes() -> list[dict[str, Any]]:
+    return tdx_get(
+        f"/Bus/Route/City/{CITY}?$format=JSON",
+        cache_key="yunlin_routes",
+        ttl_seconds=3600,
+    )
+
+
+def get_yunlin_stop_of_route(route_name: str) -> list[dict[str, Any]]:
+    return tdx_get(
+        f"/Bus/StopOfRoute/City/{CITY}/{route_name}?$format=JSON",
+        cache_key=f"stop_of_route:{route_name}",
+        ttl_seconds=3600,
+    )
+
+
+def get_yunlin_eta(route_name: Optional[str] = None) -> list[dict[str, Any]]:
     """
-    取得某路線的站序。
-    例如：701、7120。
-    """
-    url = f"{BASE_URL}/Bus/StopOfRoute/City/{CITY}/{route_name}?$format=JSON"
-
-    response = requests.get(url, headers=get_headers(), timeout=10)
-    response.raise_for_status()
-
-    return response.json()
-
-
-def get_yunlin_eta(route_name: str):
-    """
-    取得某路線的預估到站時間。
-    EstimateTime 通常是秒數。
-    """
-    url = f"{BASE_URL}/Bus/EstimatedTimeOfArrival/City/{CITY}/{route_name}?$format=JSON"
-
-    response = requests.get(url, headers=get_headers(), timeout=10)
-    response.raise_for_status()
-
-    return response.json()
-
-
-def get_yunlin_realtime_by_frequency(route_name: str | None = None):
-    """
-    取得雲林公車即時位置/動態資料。
-    route_name 可選。
+    預估到站時間。
+    route_name 有給：查指定路線。
+    route_name 沒給：查整個雲林縣所有路線，再由程式過濾站名。
     """
     if route_name:
-        url = f"{BASE_URL}/Bus/RealTimeByFrequency/Streaming/City/{CITY}/{route_name}?$format=JSON"
-    else:
-        url = f"{BASE_URL}/Bus/RealTimeByFrequency/Streaming/City/{CITY}?$format=JSON"
+        return tdx_get(
+            f"/Bus/EstimatedTimeOfArrival/City/{CITY}/{route_name}?$format=JSON",
+            cache_key=f"eta:{route_name}",
+            ttl_seconds=20,
+        )
 
-    response = requests.get(url, headers=get_headers(), timeout=10)
-    response.raise_for_status()
+    return tdx_get(
+        f"/Bus/EstimatedTimeOfArrival/City/{CITY}?$format=JSON",
+        cache_key="eta:all",
+        ttl_seconds=20,
+    )
 
-    return response.json()
+
+def get_yunlin_realtime(route_name: Optional[str] = None) -> list[dict[str, Any]]:
+    """
+    車輛即時位置 / 動態資料。
+    """
+    if route_name:
+        return tdx_get(
+            f"/Bus/RealTimeByFrequency/Streaming/City/{CITY}/{route_name}?$format=JSON",
+            cache_key=f"realtime:{route_name}",
+            ttl_seconds=15,
+        )
+
+    return tdx_get(
+        f"/Bus/RealTimeByFrequency/Streaming/City/{CITY}?$format=JSON",
+        cache_key="realtime:all",
+        ttl_seconds=15,
+    )
